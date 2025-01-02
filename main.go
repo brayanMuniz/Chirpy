@@ -4,17 +4,16 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"github.com/brayanMuniz/Chirpy/internal/database"
+	"github.com/google/uuid"
+	"github.com/joho/godotenv"
+	_ "github.com/lib/pq" // The underscore tells Go that you're importing it for its side effects, not because you need to use it.
 	"net/http"
 	"os"
 	"slices"
 	"strings"
 	"sync/atomic"
 	"time"
-
-	"github.com/brayanMuniz/Chirpy/internal/database"
-	"github.com/google/uuid"
-	"github.com/joho/godotenv"
-	_ "github.com/lib/pq" // The underscore tells Go that you're importing it for its side effects, not because you need to use it.
 )
 
 type apiConfig struct {
@@ -29,6 +28,14 @@ type User struct {
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 	Email     string    `json:"email"`
+}
+
+type Chirp struct {
+	ID        uuid.UUID `json:"id"`
+	User_id   uuid.UUID `json:"user_id"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Body      string    `json:"body"`
 }
 
 // this is the method in order to increment the apiConfig by one
@@ -107,7 +114,7 @@ func main() {
 			w.WriteHeader(500)
 			return
 		}
-
+		fmt.Println("DELETING EVERYTHING")
 		w.WriteHeader(200)
 		apiCfg.fileserverHits.Store(0)
 		return
@@ -121,16 +128,28 @@ func main() {
 		w.Write(msg)
 	})
 
-	// /api/validate_chirp
-	mux.HandleFunc("POST /api/validate_chirp", func(w http.ResponseWriter, r *http.Request) {
+	// TODO: The main problem is how the test is being generated. It is using a template in the user_id
+
+	// /api/chirps
+	mux.HandleFunc("POST /api/chirps", func(w http.ResponseWriter, r *http.Request) {
 		type parameters struct {
-			Body string `json:"body"` // NOTE: this must be capatilized in order to be exported, the value on the right is the name of what goes out
+			Body   string `json:"body"` // NOTE: this must be capatilized in order to be exported, the value on the right is the name of what goes out
+			UserID string `json:"user_id"`
 		}
 		decoder := json.NewDecoder(r.Body)
 		params := parameters{}
 		err := decoder.Decode(&params)
 		if err != nil {
-			writeJSONResponse(w, 500, map[string]string{"error": "Something went wrong"})
+			writeJSONResponse(w, 500, map[string]string{"error": "Could not decode your request"})
+			return
+		}
+
+		fmt.Printf("Received params: %+v\n", params)
+
+		// Convert string to UUID
+		userID, err := uuid.Parse(params.UserID)
+		if err != nil {
+			writeJSONResponse(w, 400, map[string]string{"error": "Invalid user_id format"})
 			return
 		}
 
@@ -149,11 +168,40 @@ func main() {
 			} else {
 				cleanResponseSlice = append(cleanResponseSlice, v)
 			}
-
 		}
 
-		// message is good
-		writeJSONResponse(w, 200, map[string]string{"cleaned_body": strings.Join(cleanResponseSlice, " ")})
+		// NOTE: Use the params from SQLC
+		chirpParams := database.CreateChirpParams{
+			ID:     uuid.New(), // This generates a new UUID
+			UserID: userID,
+			Body:   strings.Join(cleanResponseSlice, " "), // Note: field name is Body, not body
+		}
+
+		// Call the function with the struct
+		chirp, err := apiCfg.dbQueries.CreateChirp(r.Context(), database.CreateChirpParams(chirpParams))
+		if err != nil {
+			fmt.Printf("Error creating chirp: %v\n", err)
+			writeJSONResponse(w, 500, map[string]string{"error": "Failed to create chirp"})
+			return
+		}
+
+		// wrapper
+		type chirpResponse struct {
+			ID        uuid.UUID `json:"id"`
+			UserId    uuid.UUID `json:"user_id"`
+			CreatedAt time.Time `json:"created_at"`
+			UpdatedAt time.Time `json:"updated_at"`
+			Body      string    `json:"body"`
+		}
+		response := chirpResponse{
+			ID:        chirp.ID,
+			UserId:    chirp.UserID,
+			CreatedAt: chirp.CreatedAt,
+			UpdatedAt: chirp.UpdatedAt,
+			Body:      chirp.Body,
+		}
+
+		writeJSONResponse(w, 201, response)
 		return
 
 	})
@@ -172,27 +220,35 @@ func main() {
 			return
 		}
 
-		type CreateUserParams struct {
-			ID    uuid.UUID
-			Email string
-		}
-
-		// Create and populate the struct
-		userParams := CreateUserParams{
-			ID:    uuid.MustParse(uuid.NewString()), // Convert the string to UUID
+		userParams := database.CreateUserParams{
+			ID:    uuid.New(), // This generates a new UUID
 			Email: params.Email,
 		}
 
 		// Call the function with the struct
-		user, err := apiCfg.dbQueries.CreateUser(r.Context(), database.CreateUserParams(userParams))
-
+		user, err := apiCfg.dbQueries.CreateUser(r.Context(), userParams)
 		if err != nil {
 			fmt.Printf("Error creating user: %v\n", err)
 			writeJSONResponse(w, 500, map[string]string{"error": "Failed to create user"})
 			return
 		}
 
-		writeJSONResponse(w, 201, user)
+		// wrapper
+		type userResponse struct {
+			ID        uuid.UUID `json:"id"`
+			CreatedAt time.Time `json:"created_at"`
+			UpdatedAt time.Time `json:"updated_at"`
+			Email     string    `json:"email"`
+		}
+		response := userResponse{
+			ID:        user.ID,
+			CreatedAt: user.CreatedAt,
+			UpdatedAt: user.UpdatedAt,
+			Email:     user.Email,
+		}
+
+		writeJSONResponse(w, 201, response)
+
 		return
 
 	})
