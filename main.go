@@ -4,35 +4,39 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"github.com/brayanMuniz/Chirpy/internal/database"
-	"github.com/google/uuid"
-	"github.com/joho/godotenv"
-	_ "github.com/lib/pq" // The underscore tells Go that you're importing it for its side effects, not because you need to use it.
 	"net/http"
 	"os"
 	"slices"
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/brayanMuniz/Chirpy/internal/auth"
+	"github.com/brayanMuniz/Chirpy/internal/database"
+	"github.com/google/uuid"
+	"github.com/joho/godotenv"
+	_ "github.com/lib/pq" // The underscore tells Go that you're importing it for its side effects, not because you need to use it.
 )
 
 type apiConfig struct {
 	fileserverHits atomic.Int32
 	dbQueries      *database.Queries
 	platform       string
+	secret         string
 }
 
 // Database structs
-type User struct {
+type UserJson struct {
 	ID        uuid.UUID `json:"id"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 	Email     string    `json:"email"`
+	Token     string    `json:"token"`
 }
 
-type Chirp struct {
+type ChirpJson struct {
 	ID        uuid.UUID `json:"id"`
-	User_id   uuid.UUID `json:"user_id"`
+	UserId    uuid.UUID `json:"user_id"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 	Body      string    `json:"body"`
@@ -84,9 +88,11 @@ func main() {
 		Handler: mux,
 	} // listens to network address and handles it with mux
 
+	// apiCfg
 	apiCfg := apiConfig{} // this inits it to its 0 value
 	apiCfg.dbQueries = dbQuries
 	apiCfg.platform = platform
+	apiCfg.secret = os.Getenv("SECRET")
 
 	// Serve static files from the current directory under the /app/ path
 	// StripPrefix removes /app from the request path before looking for files
@@ -128,13 +134,72 @@ func main() {
 		w.Write(msg)
 	})
 
-	// TODO: The main problem is how the test is being generated. It is using a template in the user_id
+	// GET /api/chirps
+	mux.HandleFunc("GET /api/chirps", func(w http.ResponseWriter, r *http.Request) {
+		chirps, err := apiCfg.dbQueries.GetAllChirps(r.Context())
+		if err != nil {
+			w.WriteHeader(500)
+			return
+		}
+		chirpArray := []ChirpJson{}
+
+		for _, chirp := range chirps {
+			response := ChirpJson{
+				ID:        chirp.ID,
+				UserId:    chirp.UserID,
+				CreatedAt: chirp.CreatedAt,
+				UpdatedAt: chirp.UpdatedAt,
+				Body:      chirp.Body,
+			}
+			chirpArray = append(chirpArray, response)
+
+		}
+		writeJSONResponse(w, 200, chirpArray)
+		return
+	})
+
+	// GET /api/chirps/{chirpID}
+	mux.HandleFunc("/api/chirps/", func(w http.ResponseWriter, r *http.Request) {
+		// Strip the "/api/chirps/" prefix to get just the chirpID
+		path := strings.TrimPrefix(r.URL.Path, "/api/chirps/")
+
+		// Ensure that what remains is a valid-looking UUID
+		if path == "" {
+			fmt.Println("UUID is empty")
+			w.WriteHeader(404)
+			return
+		}
+
+		chirpUUID, err := uuid.Parse(path)
+		if err != nil {
+			fmt.Println("Not a valid UUID")
+			w.WriteHeader(404)
+			return
+		}
+
+		chirp, err := apiCfg.dbQueries.GetChirp(r.Context(), chirpUUID)
+		if err != nil {
+			fmt.Println("Chirp not found")
+			w.WriteHeader(404)
+			return
+		}
+
+		response := ChirpJson{
+			ID:        chirp.ID,
+			UserId:    chirp.UserID,
+			CreatedAt: chirp.CreatedAt,
+			UpdatedAt: chirp.UpdatedAt,
+			Body:      chirp.Body,
+		}
+
+		writeJSONResponse(w, 200, response)
+		return
+	})
 
 	// /api/chirps
 	mux.HandleFunc("POST /api/chirps", func(w http.ResponseWriter, r *http.Request) {
 		type parameters struct {
-			Body   string `json:"body"` // NOTE: this must be capatilized in order to be exported, the value on the right is the name of what goes out
-			UserID string `json:"user_id"`
+			Body string `json:"body"`
 		}
 		decoder := json.NewDecoder(r.Body)
 		params := parameters{}
@@ -144,10 +209,14 @@ func main() {
 			return
 		}
 
-		fmt.Printf("Received params: %+v\n", params)
+		// authenticate the user using their JWT
+		userToken, err := auth.GetBearerToken(r.Header)
+		if err != nil {
+			writeJSONResponse(w, 401, map[string]string{"error": "Unathorized"})
+			return
+		}
 
-		// Convert string to UUID
-		userID, err := uuid.Parse(params.UserID)
+		userID, err := auth.ValidateJWT(userToken, apiCfg.secret)
 		if err != nil {
 			writeJSONResponse(w, 400, map[string]string{"error": "Invalid user_id format"})
 			return
@@ -210,7 +279,8 @@ func main() {
 	mux.HandleFunc("POST /api/users", func(w http.ResponseWriter, r *http.Request) {
 		// decoding the request
 		type parameters struct {
-			Email string `json:"email"`
+			Email    string `json:"email"`
+			Password string `json:"password"`
 		}
 		decoder := json.NewDecoder(r.Body)
 		params := parameters{}
@@ -220,12 +290,19 @@ func main() {
 			return
 		}
 
-		userParams := database.CreateUserParams{
-			ID:    uuid.New(), // This generates a new UUID
-			Email: params.Email,
+		hashedPassword, err := auth.HashPassword(params.Password)
+		if err != nil {
+			writeJSONResponse(w, 500, map[string]string{"error": "Something went wrong"})
+			return
 		}
 
-		// Call the function with the struct
+		userParams := database.CreateUserParams{
+			ID:             uuid.New(),
+			Email:          params.Email,
+			HashedPassword: hashedPassword,
+		}
+
+		// create user in db
 		user, err := apiCfg.dbQueries.CreateUser(r.Context(), userParams)
 		if err != nil {
 			fmt.Printf("Error creating user: %v\n", err)
@@ -249,6 +326,63 @@ func main() {
 
 		writeJSONResponse(w, 201, response)
 
+		return
+
+	})
+
+	// POST /api/login
+	mux.HandleFunc("POST /api/login", func(w http.ResponseWriter, r *http.Request) {
+		type parameters struct {
+			Email            string `json:"email"`
+			Password         string `json:"password"`
+			ExpiresInSeconds *int   `json:"expires_in_seconds"` // use pointers to make it optional
+		}
+		decoder := json.NewDecoder(r.Body)
+		params := parameters{}
+		err := decoder.Decode(&params)
+		if err != nil {
+			writeJSONResponse(w, 500, map[string]string{"error": "Something went wrong"})
+			return
+		}
+
+		if params.ExpiresInSeconds == nil || *params.ExpiresInSeconds > 3600 {
+			defaultExpireSeconds := 3600
+			params.ExpiresInSeconds = &defaultExpireSeconds
+		}
+
+		// check that the user exist and that the password is correct
+		user, err := apiCfg.dbQueries.GetUserByEmail(r.Context(), params.Email)
+		if err != nil {
+			fmt.Println("Could not find user")
+			writeJSONResponse(w, 401, map[string]string{"error": "Incorrect email or password"})
+			return
+
+		}
+
+		err = auth.CheckPasswordHash(params.Password, user.HashedPassword)
+		if err != nil {
+			fmt.Println("Password does not match")
+			writeJSONResponse(w, 401, map[string]string{"error": "Incorrect email or password"})
+			return
+		}
+
+		// generate and respond with the token
+		tokenString, err := auth.MakeJWT(user.ID, apiCfg.secret, time.Duration(*params.ExpiresInSeconds)*time.Second) // NOTE: needs to be multiplied this way in order for it to work
+		if err != nil {
+			fmt.Println("Could not generate token for user")
+			writeJSONResponse(w, 500, map[string]string{"error": "Could not generate token"})
+			return
+		}
+
+		userResponse := UserJson{
+			ID:        user.ID,
+			CreatedAt: user.CreatedAt,
+			UpdatedAt: user.UpdatedAt,
+			Email:     user.Email,
+			Token:     tokenString,
+		}
+
+		writeJSONResponse(w, 200, userResponse)
 		return
 
 	})
