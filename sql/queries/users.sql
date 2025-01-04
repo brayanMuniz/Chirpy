@@ -9,6 +9,5 @@ RETURNING *;
 SELECT * FROM users
 WHERE email = $1;
 
-
 -- name: DeleteAll :exec
 DELETE FROM users;

@@ -27,11 +27,12 @@ type apiConfig struct {
 
 // Database structs
 type UserJson struct {
-	ID        uuid.UUID `json:"id"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
-	Email     string    `json:"email"`
-	Token     string    `json:"token"`
+	ID           uuid.UUID `json:"id"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+	Email        string    `json:"email"`
+	Token        string    `json:"token"`
+	RefreshToken string    `json:"refresh_token"`
 }
 
 type ChirpJson struct {
@@ -218,7 +219,7 @@ func main() {
 
 		userID, err := auth.ValidateJWT(userToken, apiCfg.secret)
 		if err != nil {
-			writeJSONResponse(w, 400, map[string]string{"error": "Invalid user_id format"})
+			writeJSONResponse(w, 401, map[string]string{"error": "Invalid user_id format"})
 			return
 		}
 
@@ -330,12 +331,73 @@ func main() {
 
 	})
 
+	// POST /api/refresh
+	mux.HandleFunc("POST /api/refresh", func(w http.ResponseWriter, r *http.Request) {
+		refreshToken, err := auth.GetBearerToken(r.Header)
+		if err != nil {
+			writeJSONResponse(w, 401, map[string]string{"error": "Provide a refresh_token"})
+			return
+		}
+
+		t, err := apiCfg.dbQueries.GetRefreshToken(r.Context(), refreshToken)
+		if err != nil {
+			writeJSONResponse(w, 401, map[string]string{"error": "Could not find your refresh_token"})
+			return
+		}
+
+		if !time.Now().Before(t.ExpiresAt) || t.RevokedAt.Valid {
+			writeJSONResponse(w, 401, map[string]string{"error": "Token has expired"})
+			return
+		}
+
+		// create a new JWT and return that
+		tokenString, err := auth.MakeJWT(t.UserID, apiCfg.secret, time.Duration(3600)*time.Second) // NOTE: needs to be multiplied this way in order for it to work
+		if err != nil {
+			fmt.Println("Could not generate token for user")
+			writeJSONResponse(w, 500, map[string]string{"error": "Could not generate token"})
+			return
+		}
+
+		// Make refresh token and add it to the database
+		rToken, err := auth.MakeRefreshToken()
+		if err != nil {
+			writeJSONResponse(w, 500, map[string]string{"error": "Could not generate refresh token"})
+			return
+		}
+		_, err = apiCfg.dbQueries.CreateRefreshToken(r.Context(), database.CreateRefreshTokenParams{
+			Token:  rToken,
+			UserID: t.UserID,
+		})
+		if err != nil {
+			writeJSONResponse(w, 500, map[string]string{"error": "Error in the db, my bad"})
+			return
+		}
+
+		writeJSONResponse(w, 200, map[string]string{"token": tokenString})
+		return
+	})
+
+	// POST /api/revoke
+	mux.HandleFunc("POST /api/revoke", func(w http.ResponseWriter, r *http.Request) {
+		refreshToken, err := auth.GetBearerToken(r.Header)
+		if err != nil {
+			writeJSONResponse(w, 401, map[string]string{"error": "Provide a refresh_token"})
+			return
+		}
+		_, err = apiCfg.dbQueries.RevokeToken(r.Context(), refreshToken)
+		if err != nil {
+			writeJSONResponse(w, 500, map[string]string{"error": "Could not revoke the access token"})
+			return
+		}
+
+		w.WriteHeader(204)
+	})
+
 	// POST /api/login
 	mux.HandleFunc("POST /api/login", func(w http.ResponseWriter, r *http.Request) {
 		type parameters struct {
-			Email            string `json:"email"`
-			Password         string `json:"password"`
-			ExpiresInSeconds *int   `json:"expires_in_seconds"` // use pointers to make it optional
+			Email    string `json:"email"`
+			Password string `json:"password"`
 		}
 		decoder := json.NewDecoder(r.Body)
 		params := parameters{}
@@ -343,11 +405,6 @@ func main() {
 		if err != nil {
 			writeJSONResponse(w, 500, map[string]string{"error": "Something went wrong"})
 			return
-		}
-
-		if params.ExpiresInSeconds == nil || *params.ExpiresInSeconds > 3600 {
-			defaultExpireSeconds := 3600
-			params.ExpiresInSeconds = &defaultExpireSeconds
 		}
 
 		// check that the user exist and that the password is correct
@@ -367,19 +424,35 @@ func main() {
 		}
 
 		// generate and respond with the token
-		tokenString, err := auth.MakeJWT(user.ID, apiCfg.secret, time.Duration(*params.ExpiresInSeconds)*time.Second) // NOTE: needs to be multiplied this way in order for it to work
+		tokenString, err := auth.MakeJWT(user.ID, apiCfg.secret, time.Duration(3600)*time.Second) // NOTE: needs to be multiplied this way in order for it to work
 		if err != nil {
 			fmt.Println("Could not generate token for user")
 			writeJSONResponse(w, 500, map[string]string{"error": "Could not generate token"})
 			return
 		}
 
+		// Make refresh token and add it to the database
+		rToken, err := auth.MakeRefreshToken()
+		if err != nil {
+			writeJSONResponse(w, 500, map[string]string{"error": "Could not generate refresh token"})
+			return
+		}
+		_, err = apiCfg.dbQueries.CreateRefreshToken(r.Context(), database.CreateRefreshTokenParams{
+			Token:  rToken,
+			UserID: user.ID,
+		})
+		if err != nil {
+			writeJSONResponse(w, 500, map[string]string{"error": "Error in the db, my bad"})
+			return
+		}
+
 		userResponse := UserJson{
-			ID:        user.ID,
-			CreatedAt: user.CreatedAt,
-			UpdatedAt: user.UpdatedAt,
-			Email:     user.Email,
-			Token:     tokenString,
+			ID:           user.ID,
+			CreatedAt:    user.CreatedAt,
+			UpdatedAt:    user.UpdatedAt,
+			Email:        user.Email,
+			Token:        tokenString,
+			RefreshToken: rToken,
 		}
 
 		writeJSONResponse(w, 200, userResponse)
