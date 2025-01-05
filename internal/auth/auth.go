@@ -5,12 +5,11 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"net/http"
-	"time"
-
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
+	"net/http"
+	"time"
 )
 
 func HashPassword(password string) (string, error) {
@@ -71,6 +70,16 @@ func GetBearerToken(headers http.Header) (string, error) {
 		return "", errors.New("Bearer Token not found")
 	}
 	token := bearerToken[7:]
+	return token, nil
+}
+
+// Authorization: ApiKey THE_KEY
+func GetAPIKey(headers http.Header) (string, error) {
+	apiKey := headers.Get("Authorization")
+	if apiKey == "" || apiKey[:7] != "ApiKey " {
+		return "", errors.New("ApiKey not found")
+	}
+	token := apiKey[7:]
 	return token, nil
 }
 

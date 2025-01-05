@@ -23,6 +23,7 @@ type apiConfig struct {
 	dbQueries      *database.Queries
 	platform       string
 	secret         string
+	polkakey       string
 }
 
 // Database structs
@@ -33,6 +34,7 @@ type UserJson struct {
 	Email        string    `json:"email"`
 	Token        string    `json:"token"`
 	RefreshToken string    `json:"refresh_token"`
+	IsChirpyRed  bool      `json:"is_chirpy_red"`
 }
 
 type ChirpJson struct {
@@ -94,6 +96,7 @@ func main() {
 	apiCfg.dbQueries = dbQuries
 	apiCfg.platform = platform
 	apiCfg.secret = os.Getenv("SECRET")
+	apiCfg.polkakey = os.Getenv("POLKA_KEY")
 
 	// Serve static files from the current directory under the /app/ path
 	// StripPrefix removes /app from the request path before looking for files
@@ -137,30 +140,59 @@ func main() {
 
 	// GET /api/chirps
 	mux.HandleFunc("GET /api/chirps", func(w http.ResponseWriter, r *http.Request) {
-		chirps, err := apiCfg.dbQueries.GetAllChirps(r.Context())
-		if err != nil {
-			w.WriteHeader(500)
-			return
-		}
 		chirpArray := []ChirpJson{}
-
-		for _, chirp := range chirps {
-			response := ChirpJson{
-				ID:        chirp.ID,
-				UserId:    chirp.UserID,
-				CreatedAt: chirp.CreatedAt,
-				UpdatedAt: chirp.UpdatedAt,
-				Body:      chirp.Body,
+		author_id := r.URL.Query().Get("author_id")
+		if author_id == "" {
+			chirps, err := apiCfg.dbQueries.GetAllChirps(r.Context())
+			if err != nil {
+				w.WriteHeader(500)
+				return
 			}
-			chirpArray = append(chirpArray, response)
+
+			for _, chirp := range chirps {
+				response := ChirpJson{
+					ID:        chirp.ID,
+					UserId:    chirp.UserID,
+					CreatedAt: chirp.CreatedAt,
+					UpdatedAt: chirp.UpdatedAt,
+					Body:      chirp.Body,
+				}
+				chirpArray = append(chirpArray, response)
+
+			}
+		} else {
+			parsed_id, err := uuid.Parse(author_id)
+			if err != nil {
+				w.WriteHeader(500)
+				return
+
+			}
+			chirps, err := apiCfg.dbQueries.GetChirpsByAuthor(r.Context(), parsed_id)
+			if err != nil {
+				w.WriteHeader(500)
+				return
+			}
+
+			for _, chirp := range chirps {
+				response := ChirpJson{
+					ID:        chirp.ID,
+					UserId:    chirp.UserID,
+					CreatedAt: chirp.CreatedAt,
+					UpdatedAt: chirp.UpdatedAt,
+					Body:      chirp.Body,
+				}
+				chirpArray = append(chirpArray, response)
+
+			}
 
 		}
+
 		writeJSONResponse(w, 200, chirpArray)
 		return
 	})
 
 	// GET /api/chirps/{chirpID}
-	mux.HandleFunc("/api/chirps/", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /api/chirps/", func(w http.ResponseWriter, r *http.Request) {
 		// Strip the "/api/chirps/" prefix to get just the chirpID
 		path := strings.TrimPrefix(r.URL.Path, "/api/chirps/")
 
@@ -195,6 +227,61 @@ func main() {
 
 		writeJSONResponse(w, 200, response)
 		return
+	})
+
+	// DELETE /api/chirps/{chirpID}
+	mux.HandleFunc("DELETE /api/chirps/", func(w http.ResponseWriter, r *http.Request) {
+		// Strip the "/api/chirps/" prefix to get just the chirpID
+		path := strings.TrimPrefix(r.URL.Path, "/api/chirps/")
+
+		// Ensure that what remains is a valid-looking UUID
+		if path == "" {
+			fmt.Println("UUID is empty")
+			w.WriteHeader(404)
+			return
+		}
+
+		chirpUUID, err := uuid.Parse(path)
+		if err != nil {
+			fmt.Println("Not a valid UUID")
+			w.WriteHeader(404)
+			return
+		}
+
+		// Get chirp from database
+		chirp, err := apiCfg.dbQueries.GetChirp(r.Context(), chirpUUID)
+		if err != nil {
+			fmt.Println("Chirp not found")
+			w.WriteHeader(404)
+			return
+		}
+
+		// authenticate the user using their JWT
+		userToken, err := auth.GetBearerToken(r.Header)
+		if err != nil {
+			writeJSONResponse(w, 401, map[string]string{"error": "Unathorized"})
+			return
+		}
+
+		userID, err := auth.ValidateJWT(userToken, apiCfg.secret)
+		if err != nil {
+			writeJSONResponse(w, 401, map[string]string{"error": "Invalid user_id format"})
+			return
+		}
+
+		// check that the chirp author is the requesting author
+		if chirp.UserID != userID {
+			writeJSONResponse(w, 403, map[string]string{"error": "You are not the chirp author"})
+			return
+		}
+
+		err = apiCfg.dbQueries.DeleteChirp(r.Context(), chirp.ID)
+		if err != nil {
+			writeJSONResponse(w, 404, map[string]string{"error": "Could not find the chirp"})
+			return
+		}
+		w.WriteHeader(204)
+
 	})
 
 	// /api/chirps
@@ -276,6 +363,72 @@ func main() {
 
 	})
 
+	// PUT /api/users
+	mux.HandleFunc("PUT /api/users", func(w http.ResponseWriter, r *http.Request) {
+		// authenticate the user using their JWT
+		userToken, err := auth.GetBearerToken(r.Header)
+		if err != nil {
+			writeJSONResponse(w, 401, map[string]string{"error": "Unathorized"})
+			return
+		}
+
+		userID, err := auth.ValidateJWT(userToken, apiCfg.secret)
+		if err != nil {
+			writeJSONResponse(w, 401, map[string]string{"error": "Invalid user_id format"})
+			return
+		}
+
+		// check provided parameters
+		type parameters struct {
+			Email    string `json:"email"`
+			Password string `json:"password"`
+		}
+		decoder := json.NewDecoder(r.Body)
+		params := parameters{}
+		err = decoder.Decode(&params)
+		if err != nil {
+			writeJSONResponse(w, 500, map[string]string{"error": "Could not decode your request"})
+			return
+		}
+
+		// hash the password
+		hPassword, err := auth.HashPassword(params.Password)
+		if err != nil {
+			writeJSONResponse(w, 500, map[string]string{"error": "Failed to hash your password"})
+			return
+		}
+
+		// update the email and password
+		user, err := apiCfg.dbQueries.UpdateUser(r.Context(), database.UpdateUserParams{
+			Email:          params.Email,
+			HashedPassword: hPassword,
+			ID:             userID,
+		})
+		if err != nil {
+			writeJSONResponse(w, 500, map[string]string{"error": "Failed to save your new information to the database"})
+			return
+		}
+
+		// Send back the data
+		type userResponse struct {
+			ID          uuid.UUID `json:"id"`
+			CreatedAt   time.Time `json:"created_at"`
+			UpdatedAt   time.Time `json:"updated_at"`
+			Email       string    `json:"email"`
+			IsChirpyRed bool      `json:"is_chirpy_red"`
+		}
+		response := userResponse{
+			ID:          user.ID,
+			CreatedAt:   user.CreatedAt,
+			UpdatedAt:   user.UpdatedAt,
+			Email:       user.Email,
+			IsChirpyRed: user.IsChirpyRed,
+		}
+
+		writeJSONResponse(w, 200, response)
+
+	})
+
 	// POST /api/users
 	mux.HandleFunc("POST /api/users", func(w http.ResponseWriter, r *http.Request) {
 		// decoding the request
@@ -313,16 +466,18 @@ func main() {
 
 		// wrapper
 		type userResponse struct {
-			ID        uuid.UUID `json:"id"`
-			CreatedAt time.Time `json:"created_at"`
-			UpdatedAt time.Time `json:"updated_at"`
-			Email     string    `json:"email"`
+			ID          uuid.UUID `json:"id"`
+			CreatedAt   time.Time `json:"created_at"`
+			UpdatedAt   time.Time `json:"updated_at"`
+			Email       string    `json:"email"`
+			IsChirpyRed bool      `json:"is_chirpy_red"`
 		}
 		response := userResponse{
-			ID:        user.ID,
-			CreatedAt: user.CreatedAt,
-			UpdatedAt: user.UpdatedAt,
-			Email:     user.Email,
+			ID:          user.ID,
+			CreatedAt:   user.CreatedAt,
+			UpdatedAt:   user.UpdatedAt,
+			Email:       user.Email,
+			IsChirpyRed: false,
 		}
 
 		writeJSONResponse(w, 201, response)
@@ -453,10 +608,63 @@ func main() {
 			Email:        user.Email,
 			Token:        tokenString,
 			RefreshToken: rToken,
+			IsChirpyRed:  user.IsChirpyRed,
 		}
 
 		writeJSONResponse(w, 200, userResponse)
 		return
+
+	})
+
+	// POST /api/polka/webhooks
+	mux.HandleFunc("POST /api/polka/webhooks", func(w http.ResponseWriter, r *http.Request) {
+		// check authorization using the provided api key
+		apiToken, err := auth.GetAPIKey(r.Header)
+		if err != nil {
+			writeJSONResponse(w, 401, map[string]string{"error": "Unathorized"})
+			return
+		}
+
+		if apiToken != apiCfg.polkakey {
+			writeJSONResponse(w, 401, map[string]string{"error": "Unathorized"})
+			return
+		}
+
+		type Data struct {
+			UserId string `json:"user_id"`
+		}
+
+		type parameters struct {
+			Event string `json:"event"`
+			Data  Data   `json:"data"`
+		}
+
+		decoder := json.NewDecoder(r.Body)
+		params := parameters{}
+		err = decoder.Decode(&params)
+		if err != nil {
+			writeJSONResponse(w, 500, map[string]string{"error": "Something went wrong"})
+			return
+		}
+
+		if params.Event != "user.upgraded" {
+			w.WriteHeader(204)
+			return
+		}
+
+		parsedID, err := uuid.Parse(params.Data.UserId)
+		if err != nil {
+			w.WriteHeader(404)
+			return
+		}
+
+		err = apiCfg.dbQueries.UpgradeToChirpyRed(r.Context(), parsedID)
+		if err != nil {
+			w.WriteHeader(404)
+			return
+		}
+
+		w.WriteHeader(204)
 
 	})
 
