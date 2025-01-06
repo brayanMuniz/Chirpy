@@ -140,50 +140,46 @@ func main() {
 
 	// GET /api/chirps
 	mux.HandleFunc("GET /api/chirps", func(w http.ResponseWriter, r *http.Request) {
+		query := database.GetChirpsParams{}
 		chirpArray := []ChirpJson{}
+
+		// Handle author_id query
 		author_id := r.URL.Query().Get("author_id")
-		if author_id == "" {
-			chirps, err := apiCfg.dbQueries.GetAllChirps(r.Context())
-			if err != nil {
-				w.WriteHeader(500)
-				return
-			}
-
-			for _, chirp := range chirps {
-				response := ChirpJson{
-					ID:        chirp.ID,
-					UserId:    chirp.UserID,
-					CreatedAt: chirp.CreatedAt,
-					UpdatedAt: chirp.UpdatedAt,
-					Body:      chirp.Body,
-				}
-				chirpArray = append(chirpArray, response)
-
-			}
-		} else {
+		var queryUUID uuid.UUID
+		if author_id != "" {
 			parsed_id, err := uuid.Parse(author_id)
 			if err != nil {
 				w.WriteHeader(500)
 				return
-
 			}
-			chirps, err := apiCfg.dbQueries.GetChirpsByAuthor(r.Context(), parsed_id)
-			if err != nil {
-				w.WriteHeader(500)
-				return
-			}
+			queryUUID = parsed_id
+		}
+		query.Column1 = queryUUID
 
-			for _, chirp := range chirps {
-				response := ChirpJson{
-					ID:        chirp.ID,
-					UserId:    chirp.UserID,
-					CreatedAt: chirp.CreatedAt,
-					UpdatedAt: chirp.UpdatedAt,
-					Body:      chirp.Body,
-				}
-				chirpArray = append(chirpArray, response)
+		// Handle sort query
+		sortBy := r.URL.Query().Get("sort")
+		query.Column2 = "asc" // default
+		if sortBy == "desc" || sortBy == "asc" {
+			query.Column2 = sortBy
+		}
 
+		fmt.Print(query.Column1)
+
+		chirps, err := apiCfg.dbQueries.GetChirps(r.Context(), query)
+		if err != nil {
+			w.WriteHeader(500)
+			return
+		}
+
+		for _, chirp := range chirps {
+			response := ChirpJson{
+				ID:        chirp.ID,
+				UserId:    chirp.UserID,
+				CreatedAt: chirp.CreatedAt,
+				UpdatedAt: chirp.UpdatedAt,
+				Body:      chirp.Body,
 			}
+			chirpArray = append(chirpArray, response)
 
 		}
 

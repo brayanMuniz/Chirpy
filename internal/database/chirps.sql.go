@@ -57,39 +57,6 @@ func (q *Queries) DeleteChirp(ctx context.Context, id uuid.UUID) error {
 	return err
 }
 
-const getAllChirps = `-- name: GetAllChirps :many
-SELECT id, user_id, created_at, updated_at, body FROM chirps ORDER BY created_at ASC
-`
-
-func (q *Queries) GetAllChirps(ctx context.Context) ([]Chirp, error) {
-	rows, err := q.db.QueryContext(ctx, getAllChirps)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []Chirp
-	for rows.Next() {
-		var i Chirp
-		if err := rows.Scan(
-			&i.ID,
-			&i.UserID,
-			&i.CreatedAt,
-			&i.UpdatedAt,
-			&i.Body,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const getChirp = `-- name: GetChirp :one
 SELECT id, user_id, created_at, updated_at, body FROM chirps 
 WHERE id = $1
@@ -108,14 +75,28 @@ func (q *Queries) GetChirp(ctx context.Context, id uuid.UUID) (Chirp, error) {
 	return i, err
 }
 
-const getChirpsByAuthor = `-- name: GetChirpsByAuthor :many
-SELECT id, user_id, created_at, updated_at, body FROM chirps
-WHERE user_id = $1
-ORDER BY created_at ASC
+const getChirps = `-- name: GetChirps :many
+SELECT id, user_id, created_at, updated_at, body 
+FROM chirps
+WHERE ($1 = '00000000-0000-0000-0000-000000000000'::UUID OR user_id = $1)
+ORDER BY 
+    CASE 
+        WHEN $2 = 'desc' THEN created_at 
+        ELSE NULL
+    END DESC,
+    CASE 
+        WHEN $2 = 'asc' THEN created_at 
+        ELSE NULL
+    END ASC
 `
 
-func (q *Queries) GetChirpsByAuthor(ctx context.Context, userID uuid.UUID) ([]Chirp, error) {
-	rows, err := q.db.QueryContext(ctx, getChirpsByAuthor, userID)
+type GetChirpsParams struct {
+	Column1 interface{}
+	Column2 interface{}
+}
+
+func (q *Queries) GetChirps(ctx context.Context, arg GetChirpsParams) ([]Chirp, error) {
+	rows, err := q.db.QueryContext(ctx, getChirps, arg.Column1, arg.Column2)
 	if err != nil {
 		return nil, err
 	}

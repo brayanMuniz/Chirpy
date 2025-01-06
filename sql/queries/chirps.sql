@@ -5,13 +5,19 @@ VALUES (
 )
 RETURNING *;
 
--- name: GetAllChirps :many
-SELECT * FROM chirps ORDER BY created_at ASC;
-
--- name: GetChirpsByAuthor :many
-SELECT * FROM chirps
-WHERE user_id = $1
-ORDER BY created_at ASC;
+-- name: GetChirps :many
+SELECT * 
+FROM chirps
+WHERE ($1 = '00000000-0000-0000-0000-000000000000'::UUID OR user_id = $1)
+ORDER BY 
+    CASE 
+        WHEN $2 = 'desc' THEN created_at 
+        ELSE NULL
+    END DESC,
+    CASE 
+        WHEN $2 = 'asc' THEN created_at 
+        ELSE NULL
+    END ASC;
 
 -- name: GetChirp :one
 SELECT * FROM chirps 
