@@ -34,7 +34,7 @@
 
 ### Metrics and Admin
 - `GET /admin/metrics`: Displays server metrics, including file server hits.
-- `POST /admin/reset`: Resets server state (enabled only in development).
+- `POST /admin/reset`: Resets server state 
 
 ### Chirps
 - `GET /api/chirps`: Retrieves all chirps.
