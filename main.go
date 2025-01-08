@@ -4,18 +4,15 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"net/http"
-	"os"
-	"slices"
-	"strings"
-	"sync/atomic"
-	"time"
-
 	"github.com/brayanMuniz/Chirpy/internal/auth"
 	"github.com/brayanMuniz/Chirpy/internal/database"
 	"github.com/google/uuid"
 	"github.com/joho/godotenv"
 	_ "github.com/lib/pq" // The underscore tells Go that you're importing it for its side effects, not because you need to use it.
+	"net/http"
+	"os"
+	"sync/atomic"
+	"time"
 )
 
 type apiConfig struct {
@@ -76,14 +73,14 @@ func writeJSONResponse(w http.ResponseWriter, statusCode int, respBody interface
 
 func main() {
 	godotenv.Load()
+
+	// Load in the database
 	dbURL := os.Getenv("DB_URL")
-	platform := os.Getenv("PLATFORM")
 	db, err := sql.Open("postgres", dbURL)
 	if err = db.Ping(); err != nil {
 		fmt.Println("Error connecting to the database: ", err)
 		return
 	}
-	dbQuries := database.New(db) // returns a pointer to it
 
 	mux := http.NewServeMux() // responsible for handling and routing paths
 	server := http.Server{
@@ -92,441 +89,44 @@ func main() {
 	} // listens to network address and handles it with mux
 
 	// apiCfg
-	apiCfg := apiConfig{} // this inits it to its 0 value
-	apiCfg.dbQueries = dbQuries
-	apiCfg.platform = platform
+	apiCfg := apiConfig{}
+	apiCfg.dbQueries = database.New(db)
+	apiCfg.platform = os.Getenv("PLATFORM")
 	apiCfg.secret = os.Getenv("SECRET")
 	apiCfg.polkakey = os.Getenv("POLKA_KEY")
 
 	// Serve static files from the current directory under the /app/ path
-	// StripPrefix removes /app from the request path before looking for files
 	fileServer := http.FileServer(http.Dir("./"))
 	handler := http.StripPrefix("/app", fileServer)
 	mux.Handle("/app/", apiCfg.middlewareMetricsInc(handler))
 
-	// metrics
-	mux.HandleFunc("GET /admin/metrics", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		msg := (fmt.Sprintf("<html> <body> <h1>Welcome, Chirpy Admin</h1> <p>Chirpy has been visited %d times!</p> </body> </html>", apiCfg.fileserverHits.Load()))
-		w.Write([]byte(msg))
-	})
+	// server status
+	mux.HandleFunc("GET /api/healthz", apiCfg.handlerHealthz)
+	mux.HandleFunc("GET /admin/metrics", apiCfg.handlerMetrics)
 
-	// POST /admin/reset
-	mux.HandleFunc("POST /admin/reset", func(w http.ResponseWriter, r *http.Request) {
-		// dont allow this to happen unless the env variable is set to dev
-		if apiCfg.platform != "dev" {
-			w.WriteHeader(403)
-			return
-		}
-
-		err := apiCfg.dbQueries.DeleteAll(r.Context())
-		if err != nil {
-			w.WriteHeader(500)
-			return
-		}
-		fmt.Println("DELETING EVERYTHING")
-		w.WriteHeader(200)
-		apiCfg.fileserverHits.Store(0)
-		return
-	})
-
-	// healthz
-	mux.HandleFunc("GET /api/healthz", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		w.WriteHeader(200)
-		msg := []byte("OK")
-		w.Write(msg)
-	})
+	// dont allow this to happen unless the env variable is set to dev
+	mux.HandleFunc("POST /admin/reset", apiCfg.handlerReset)
 
 	// GET /api/chirps
-	mux.HandleFunc("GET /api/chirps", func(w http.ResponseWriter, r *http.Request) {
-		query := database.GetChirpsParams{}
-		chirpArray := []ChirpJson{}
-
-		// Handle author_id query
-		author_id := r.URL.Query().Get("author_id")
-		var queryUUID uuid.UUID
-		if author_id != "" {
-			parsed_id, err := uuid.Parse(author_id)
-			if err != nil {
-				w.WriteHeader(500)
-				return
-			}
-			queryUUID = parsed_id
-		}
-		query.Column1 = queryUUID
-
-		// Handle sort query
-		sortBy := r.URL.Query().Get("sort")
-		query.Column2 = "asc" // default
-		if sortBy == "desc" || sortBy == "asc" {
-			query.Column2 = sortBy
-		}
-
-		fmt.Print(query.Column1)
-
-		chirps, err := apiCfg.dbQueries.GetChirps(r.Context(), query)
-		if err != nil {
-			w.WriteHeader(500)
-			return
-		}
-
-		for _, chirp := range chirps {
-			response := ChirpJson{
-				ID:        chirp.ID,
-				UserId:    chirp.UserID,
-				CreatedAt: chirp.CreatedAt,
-				UpdatedAt: chirp.UpdatedAt,
-				Body:      chirp.Body,
-			}
-			chirpArray = append(chirpArray, response)
-
-		}
-
-		writeJSONResponse(w, 200, chirpArray)
-		return
-	})
+	mux.HandleFunc("GET /api/chirps", apiCfg.handlerGetAllChirps)
 
 	// GET /api/chirps/{chirpID}
-	mux.HandleFunc("GET /api/chirps/", func(w http.ResponseWriter, r *http.Request) {
-		// Strip the "/api/chirps/" prefix to get just the chirpID
-		path := strings.TrimPrefix(r.URL.Path, "/api/chirps/")
-
-		// Ensure that what remains is a valid-looking UUID
-		if path == "" {
-			fmt.Println("UUID is empty")
-			w.WriteHeader(404)
-			return
-		}
-
-		chirpUUID, err := uuid.Parse(path)
-		if err != nil {
-			fmt.Println("Not a valid UUID")
-			w.WriteHeader(404)
-			return
-		}
-
-		chirp, err := apiCfg.dbQueries.GetChirp(r.Context(), chirpUUID)
-		if err != nil {
-			fmt.Println("Chirp not found")
-			w.WriteHeader(404)
-			return
-		}
-
-		response := ChirpJson{
-			ID:        chirp.ID,
-			UserId:    chirp.UserID,
-			CreatedAt: chirp.CreatedAt,
-			UpdatedAt: chirp.UpdatedAt,
-			Body:      chirp.Body,
-		}
-
-		writeJSONResponse(w, 200, response)
-		return
-	})
+	mux.HandleFunc("GET /api/chirps/", apiCfg.handlerGetChirp)
 
 	// DELETE /api/chirps/{chirpID}
-	mux.HandleFunc("DELETE /api/chirps/", func(w http.ResponseWriter, r *http.Request) {
-		// Strip the "/api/chirps/" prefix to get just the chirpID
-		path := strings.TrimPrefix(r.URL.Path, "/api/chirps/")
+	mux.HandleFunc("DELETE /api/chirps/", apiCfg.deleteChirp)
 
-		// Ensure that what remains is a valid-looking UUID
-		if path == "" {
-			fmt.Println("UUID is empty")
-			w.WriteHeader(404)
-			return
-		}
-
-		chirpUUID, err := uuid.Parse(path)
-		if err != nil {
-			fmt.Println("Not a valid UUID")
-			w.WriteHeader(404)
-			return
-		}
-
-		// Get chirp from database
-		chirp, err := apiCfg.dbQueries.GetChirp(r.Context(), chirpUUID)
-		if err != nil {
-			fmt.Println("Chirp not found")
-			w.WriteHeader(404)
-			return
-		}
-
-		// authenticate the user using their JWT
-		userToken, err := auth.GetBearerToken(r.Header)
-		if err != nil {
-			writeJSONResponse(w, 401, map[string]string{"error": "Unathorized"})
-			return
-		}
-
-		userID, err := auth.ValidateJWT(userToken, apiCfg.secret)
-		if err != nil {
-			writeJSONResponse(w, 401, map[string]string{"error": "Invalid user_id format"})
-			return
-		}
-
-		// check that the chirp author is the requesting author
-		if chirp.UserID != userID {
-			writeJSONResponse(w, 403, map[string]string{"error": "You are not the chirp author"})
-			return
-		}
-
-		err = apiCfg.dbQueries.DeleteChirp(r.Context(), chirp.ID)
-		if err != nil {
-			writeJSONResponse(w, 404, map[string]string{"error": "Could not find the chirp"})
-			return
-		}
-		w.WriteHeader(204)
-
-	})
-
-	// /api/chirps
-	mux.HandleFunc("POST /api/chirps", func(w http.ResponseWriter, r *http.Request) {
-		type parameters struct {
-			Body string `json:"body"`
-		}
-		decoder := json.NewDecoder(r.Body)
-		params := parameters{}
-		err := decoder.Decode(&params)
-		if err != nil {
-			writeJSONResponse(w, 500, map[string]string{"error": "Could not decode your request"})
-			return
-		}
-
-		// authenticate the user using their JWT
-		userToken, err := auth.GetBearerToken(r.Header)
-		if err != nil {
-			writeJSONResponse(w, 401, map[string]string{"error": "Unathorized"})
-			return
-		}
-
-		userID, err := auth.ValidateJWT(userToken, apiCfg.secret)
-		if err != nil {
-			writeJSONResponse(w, 401, map[string]string{"error": "Invalid user_id format"})
-			return
-		}
-
-		// msg too long
-		if len(params.Body) > 140 {
-			writeJSONResponse(w, 400, map[string]string{"error": "Chirp is too long"})
-			return
-		}
-
-		// check for bad words
-		badWords := []string{"kerfuffle", "sharbert", "fornax"}
-		cleanResponseSlice := []string{}
-		for _, v := range strings.Split(params.Body, " ") {
-			if slices.Contains(badWords, strings.ToLower(v)) {
-				cleanResponseSlice = append(cleanResponseSlice, "****")
-			} else {
-				cleanResponseSlice = append(cleanResponseSlice, v)
-			}
-		}
-
-		// NOTE: Use the params from SQLC
-		chirpParams := database.CreateChirpParams{
-			ID:     uuid.New(), // This generates a new UUID
-			UserID: userID,
-			Body:   strings.Join(cleanResponseSlice, " "), // Note: field name is Body, not body
-		}
-
-		// Call the function with the struct
-		chirp, err := apiCfg.dbQueries.CreateChirp(r.Context(), database.CreateChirpParams(chirpParams))
-		if err != nil {
-			fmt.Printf("Error creating chirp: %v\n", err)
-			writeJSONResponse(w, 500, map[string]string{"error": "Failed to create chirp"})
-			return
-		}
-
-		// wrapper
-		type chirpResponse struct {
-			ID        uuid.UUID `json:"id"`
-			UserId    uuid.UUID `json:"user_id"`
-			CreatedAt time.Time `json:"created_at"`
-			UpdatedAt time.Time `json:"updated_at"`
-			Body      string    `json:"body"`
-		}
-		response := chirpResponse{
-			ID:        chirp.ID,
-			UserId:    chirp.UserID,
-			CreatedAt: chirp.CreatedAt,
-			UpdatedAt: chirp.UpdatedAt,
-			Body:      chirp.Body,
-		}
-
-		writeJSONResponse(w, 201, response)
-		return
-
-	})
+	// POst /api/chirps
+	mux.HandleFunc("POST /api/chirps", apiCfg.handlerPostChirp)
 
 	// PUT /api/users
-	mux.HandleFunc("PUT /api/users", func(w http.ResponseWriter, r *http.Request) {
-		// authenticate the user using their JWT
-		userToken, err := auth.GetBearerToken(r.Header)
-		if err != nil {
-			writeJSONResponse(w, 401, map[string]string{"error": "Unathorized"})
-			return
-		}
-
-		userID, err := auth.ValidateJWT(userToken, apiCfg.secret)
-		if err != nil {
-			writeJSONResponse(w, 401, map[string]string{"error": "Invalid user_id format"})
-			return
-		}
-
-		// check provided parameters
-		type parameters struct {
-			Email    string `json:"email"`
-			Password string `json:"password"`
-		}
-		decoder := json.NewDecoder(r.Body)
-		params := parameters{}
-		err = decoder.Decode(&params)
-		if err != nil {
-			writeJSONResponse(w, 500, map[string]string{"error": "Could not decode your request"})
-			return
-		}
-
-		// hash the password
-		hPassword, err := auth.HashPassword(params.Password)
-		if err != nil {
-			writeJSONResponse(w, 500, map[string]string{"error": "Failed to hash your password"})
-			return
-		}
-
-		// update the email and password
-		user, err := apiCfg.dbQueries.UpdateUser(r.Context(), database.UpdateUserParams{
-			Email:          params.Email,
-			HashedPassword: hPassword,
-			ID:             userID,
-		})
-		if err != nil {
-			writeJSONResponse(w, 500, map[string]string{"error": "Failed to save your new information to the database"})
-			return
-		}
-
-		// Send back the data
-		type userResponse struct {
-			ID          uuid.UUID `json:"id"`
-			CreatedAt   time.Time `json:"created_at"`
-			UpdatedAt   time.Time `json:"updated_at"`
-			Email       string    `json:"email"`
-			IsChirpyRed bool      `json:"is_chirpy_red"`
-		}
-		response := userResponse{
-			ID:          user.ID,
-			CreatedAt:   user.CreatedAt,
-			UpdatedAt:   user.UpdatedAt,
-			Email:       user.Email,
-			IsChirpyRed: user.IsChirpyRed,
-		}
-
-		writeJSONResponse(w, 200, response)
-
-	})
+	mux.HandleFunc("PUT /api/users", apiCfg.handlerUpdateUser)
 
 	// POST /api/users
-	mux.HandleFunc("POST /api/users", func(w http.ResponseWriter, r *http.Request) {
-		// decoding the request
-		type parameters struct {
-			Email    string `json:"email"`
-			Password string `json:"password"`
-		}
-		decoder := json.NewDecoder(r.Body)
-		params := parameters{}
-		err := decoder.Decode(&params)
-		if err != nil {
-			writeJSONResponse(w, 500, map[string]string{"error": "Something went wrong"})
-			return
-		}
-
-		hashedPassword, err := auth.HashPassword(params.Password)
-		if err != nil {
-			writeJSONResponse(w, 500, map[string]string{"error": "Something went wrong"})
-			return
-		}
-
-		userParams := database.CreateUserParams{
-			ID:             uuid.New(),
-			Email:          params.Email,
-			HashedPassword: hashedPassword,
-		}
-
-		// create user in db
-		user, err := apiCfg.dbQueries.CreateUser(r.Context(), userParams)
-		if err != nil {
-			fmt.Printf("Error creating user: %v\n", err)
-			writeJSONResponse(w, 500, map[string]string{"error": "Failed to create user"})
-			return
-		}
-
-		// wrapper
-		type userResponse struct {
-			ID          uuid.UUID `json:"id"`
-			CreatedAt   time.Time `json:"created_at"`
-			UpdatedAt   time.Time `json:"updated_at"`
-			Email       string    `json:"email"`
-			IsChirpyRed bool      `json:"is_chirpy_red"`
-		}
-		response := userResponse{
-			ID:          user.ID,
-			CreatedAt:   user.CreatedAt,
-			UpdatedAt:   user.UpdatedAt,
-			Email:       user.Email,
-			IsChirpyRed: false,
-		}
-
-		writeJSONResponse(w, 201, response)
-
-		return
-
-	})
+	mux.HandleFunc("POST /api/users", apiCfg.handlerPostUser)
 
 	// POST /api/refresh
-	mux.HandleFunc("POST /api/refresh", func(w http.ResponseWriter, r *http.Request) {
-		refreshToken, err := auth.GetBearerToken(r.Header)
-		if err != nil {
-			writeJSONResponse(w, 401, map[string]string{"error": "Provide a refresh_token"})
-			return
-		}
-
-		t, err := apiCfg.dbQueries.GetRefreshToken(r.Context(), refreshToken)
-		if err != nil {
-			writeJSONResponse(w, 401, map[string]string{"error": "Could not find your refresh_token"})
-			return
-		}
-
-		if !time.Now().Before(t.ExpiresAt) || t.RevokedAt.Valid {
-			writeJSONResponse(w, 401, map[string]string{"error": "Token has expired"})
-			return
-		}
-
-		// create a new JWT and return that
-		tokenString, err := auth.MakeJWT(t.UserID, apiCfg.secret, time.Duration(3600)*time.Second) // NOTE: needs to be multiplied this way in order for it to work
-		if err != nil {
-			fmt.Println("Could not generate token for user")
-			writeJSONResponse(w, 500, map[string]string{"error": "Could not generate token"})
-			return
-		}
-
-		// Make refresh token and add it to the database
-		rToken, err := auth.MakeRefreshToken()
-		if err != nil {
-			writeJSONResponse(w, 500, map[string]string{"error": "Could not generate refresh token"})
-			return
-		}
-		_, err = apiCfg.dbQueries.CreateRefreshToken(r.Context(), database.CreateRefreshTokenParams{
-			Token:  rToken,
-			UserID: t.UserID,
-		})
-		if err != nil {
-			writeJSONResponse(w, 500, map[string]string{"error": "Error in the db, my bad"})
-			return
-		}
-
-		writeJSONResponse(w, 200, map[string]string{"token": tokenString})
-		return
-	})
+	mux.HandleFunc("POST /api/refresh", apiCfg.handlerRefreshToken)
 
 	// POST /api/revoke
 	mux.HandleFunc("POST /api/revoke", func(w http.ResponseWriter, r *http.Request) {
@@ -545,124 +145,10 @@ func main() {
 	})
 
 	// POST /api/login
-	mux.HandleFunc("POST /api/login", func(w http.ResponseWriter, r *http.Request) {
-		type parameters struct {
-			Email    string `json:"email"`
-			Password string `json:"password"`
-		}
-		decoder := json.NewDecoder(r.Body)
-		params := parameters{}
-		err := decoder.Decode(&params)
-		if err != nil {
-			writeJSONResponse(w, 500, map[string]string{"error": "Something went wrong"})
-			return
-		}
-
-		// check that the user exist and that the password is correct
-		user, err := apiCfg.dbQueries.GetUserByEmail(r.Context(), params.Email)
-		if err != nil {
-			fmt.Println("Could not find user")
-			writeJSONResponse(w, 401, map[string]string{"error": "Incorrect email or password"})
-			return
-
-		}
-
-		err = auth.CheckPasswordHash(params.Password, user.HashedPassword)
-		if err != nil {
-			fmt.Println("Password does not match")
-			writeJSONResponse(w, 401, map[string]string{"error": "Incorrect email or password"})
-			return
-		}
-
-		// generate and respond with the token
-		tokenString, err := auth.MakeJWT(user.ID, apiCfg.secret, time.Duration(3600)*time.Second) // NOTE: needs to be multiplied this way in order for it to work
-		if err != nil {
-			fmt.Println("Could not generate token for user")
-			writeJSONResponse(w, 500, map[string]string{"error": "Could not generate token"})
-			return
-		}
-
-		// Make refresh token and add it to the database
-		rToken, err := auth.MakeRefreshToken()
-		if err != nil {
-			writeJSONResponse(w, 500, map[string]string{"error": "Could not generate refresh token"})
-			return
-		}
-		_, err = apiCfg.dbQueries.CreateRefreshToken(r.Context(), database.CreateRefreshTokenParams{
-			Token:  rToken,
-			UserID: user.ID,
-		})
-		if err != nil {
-			writeJSONResponse(w, 500, map[string]string{"error": "Error in the db, my bad"})
-			return
-		}
-
-		userResponse := UserJson{
-			ID:           user.ID,
-			CreatedAt:    user.CreatedAt,
-			UpdatedAt:    user.UpdatedAt,
-			Email:        user.Email,
-			Token:        tokenString,
-			RefreshToken: rToken,
-			IsChirpyRed:  user.IsChirpyRed,
-		}
-
-		writeJSONResponse(w, 200, userResponse)
-		return
-
-	})
+	mux.HandleFunc("POST /api/login", apiCfg.handlerLogin)
 
 	// POST /api/polka/webhooks
-	mux.HandleFunc("POST /api/polka/webhooks", func(w http.ResponseWriter, r *http.Request) {
-		// check authorization using the provided api key
-		apiToken, err := auth.GetAPIKey(r.Header)
-		if err != nil {
-			writeJSONResponse(w, 401, map[string]string{"error": "Unathorized"})
-			return
-		}
-
-		if apiToken != apiCfg.polkakey {
-			writeJSONResponse(w, 401, map[string]string{"error": "Unathorized"})
-			return
-		}
-
-		type Data struct {
-			UserId string `json:"user_id"`
-		}
-
-		type parameters struct {
-			Event string `json:"event"`
-			Data  Data   `json:"data"`
-		}
-
-		decoder := json.NewDecoder(r.Body)
-		params := parameters{}
-		err = decoder.Decode(&params)
-		if err != nil {
-			writeJSONResponse(w, 500, map[string]string{"error": "Something went wrong"})
-			return
-		}
-
-		if params.Event != "user.upgraded" {
-			w.WriteHeader(204)
-			return
-		}
-
-		parsedID, err := uuid.Parse(params.Data.UserId)
-		if err != nil {
-			w.WriteHeader(404)
-			return
-		}
-
-		err = apiCfg.dbQueries.UpgradeToChirpyRed(r.Context(), parsedID)
-		if err != nil {
-			w.WriteHeader(404)
-			return
-		}
-
-		w.WriteHeader(204)
-
-	})
+	mux.HandleFunc("POST /api/polka/webhooks", apiCfg.handlerWebHooks)
 
 	server.ListenAndServe()
 
