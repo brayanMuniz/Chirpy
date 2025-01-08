@@ -1,7 +1,276 @@
-<html>
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<title>Chirpy API Tester</title>
+</head>
 
 <body>
-	<h1>Welcome to Chirpy</h1>
+	<h1>Chirpy API Tester</h1>
+
+	<!-- Reset Application -->
+	<section>
+		<h3>Reset Application</h3>
+		<form id="reset-form">
+			<button type="submit">POST /admin/reset</button>
+		</form>
+	</section>
+
+	<hr>
+
+	<!-- Login -->
+	<section>
+		<h3>Login</h3>
+		<form id="login-form">
+			<label for="email">Email:</label>
+			<input type="email" id="email" placeholder="Enter email" required>
+			<br>
+			<label for="password">Password:</label>
+			<input type="password" id="password" placeholder="Enter password" required>
+			<br>
+			<button type="submit">POST /api/login</button>
+		</form>
+	</section>
+
+	<hr>
+
+	<!-- Refresh Token -->
+	<section>
+		<h3>Refresh Token</h3>
+		<form id="refresh-token-form">
+			<button type="submit">POST /api/refresh</button>
+		</form>
+	</section>
+
+	<hr>
+
+	<!-- Revoke Token -->
+	<section>
+		<h3>Revoke Token</h3>
+		<form id="revoke-token-form">
+			<button type="submit">POST /api/revoke</button>
+		</form>
+	</section>
+
+	<hr>
+
+	<!-- Create User -->
+	<section>
+		<h3>Create User</h3>
+		<form id="create-user-form">
+			<label for="user-email">Email:</label>
+			<input type="email" id="user-email" placeholder="Enter email" required>
+			<br>
+			<label for="user-password">Password:</label>
+			<input type="password" id="user-password" placeholder="Enter password" required>
+			<br>
+			<button type="submit">POST /api/users</button>
+		</form>
+	</section>
+
+	<hr>
+
+	<!-- Update User -->
+	<section>
+		<h3>Update User</h3>
+		<form id="update-user-form">
+			<textarea id="user-update-data" placeholder="Enter update data as JSON"></textarea>
+			<br>
+			<button type="submit">PUT /api/users</button>
+		</form>
+	</section>
+
+	<hr>
+
+	<!-- Create Chirp -->
+	<section>
+		<h3>Create Chirp</h3>
+		<form id="create-chirp-form">
+			<textarea id="chirp-body" placeholder="Enter chirp text" maxlength="140"></textarea>
+			<br>
+			<label for="chirp-token">Token:</label>
+			<input type="text" id="chirp-token" readonly>
+			<br>
+			<button type="submit">POST /api/chirps</button>
+		</form>
+	</section>
+	<hr>
+
+	<!-- Get All Chirps -->
+	<section>
+		<h3>Get All Chirps</h3>
+		<form id="get-chirps-form">
+			<button type="submit">GET /api/chirps</button>
+		</form>
+	</section>
+
+	<hr>
+
+	<!-- Get Chirp by ID -->
+	<section>
+		<h3>Get Chirp by ID</h3>
+		<form id="get-chirp-by-id-form">
+			<label for="chirp-id">Chirp ID:</label>
+			<input type="text" id="chirp-id" placeholder="Enter Chirp ID" required>
+			<br>
+			<button type="submit">GET /api/chirps/{chirpID}</button>
+		</form>
+	</section>
+
+	<hr>
+
+	<!-- Delete Chirp by ID -->
+	<section>
+		<h3>Delete Chirp by ID</h3>
+		<form id="delete-chirp-form">
+			<label for="delete-chirp-id">Chirp ID:</label>
+			<input type="text" id="delete-chirp-id" placeholder="Enter Chirp ID" required>
+			<br>
+			<button type="submit">DELETE /api/chirps/{chirpID}</button>
+		</form>
+	</section>
+
+	<hr>
+
+	<!-- Webhooks -->
+	<section>
+		<h3>Polka Webhooks</h3>
+		<form id="polka-webhooks-form">
+			<textarea id="webhook-data" placeholder="Enter webhook data as JSON"></textarea>
+			<br>
+			<button type="submit">POST /api/polka/webhooks</button>
+		</form>
+	</section>
+
+	<script>
+		const handleRequest = async (url, method, body = null, headers = {}) => {
+			try {
+				const response = await fetch(url, {
+					method,
+					headers: {'Content-Type': 'application/json', ...headers},
+					body: body ? JSON.stringify(body) : null,
+				});
+				const data = await response.json();
+				alert(`Response (${response.status}): ${JSON.stringify(data, null, 2)}`);
+			} catch (error) {
+				alert(`Error: ${error.message}`);
+			}
+		};
+
+		document.getElementById('reset-form').addEventListener('submit', (e) => {
+			e.preventDefault();
+			handleRequest('/admin/reset', 'POST');
+		});
+
+		let userAccessToken = '';
+
+		// Automatically populate the token field on successful login
+		document.getElementById('login-form').addEventListener('submit', async (e) => {
+			e.preventDefault();
+			const email = document.getElementById('email').value;
+			const password = document.getElementById('password').value;
+
+			try {
+				const response = await fetch('/api/login', {
+					method: 'POST',
+					headers: {'Content-Type': 'application/json'},
+					body: JSON.stringify({email, password}),
+				});
+				const data = await response.json();
+
+				if (response.ok) {
+					alert(`Login successful! Token: ${data.token}`);
+					userAccessToken = data.token;
+					document.getElementById('chirp-token').value = userAccessToken;
+				} else {
+					alert(`Login failed: ${data.error || 'Unknown error'}`);
+				}
+			} catch (error) {
+				alert(`Error during login: ${error.message}`);
+			}
+		});
+
+
+
+		document.getElementById('refresh-token-form').addEventListener('submit', (e) => {
+			e.preventDefault();
+			handleRequest('/api/refresh', 'POST');
+		});
+
+		document.getElementById('revoke-token-form').addEventListener('submit', (e) => {
+			e.preventDefault();
+			handleRequest('/api/revoke', 'POST');
+		});
+
+		document.getElementById('create-user-form').addEventListener('submit', (e) => {
+			e.preventDefault();
+			const email = document.getElementById('user-email').value;
+			const password = document.getElementById('user-password').value;
+			handleRequest('/api/users', 'POST', {email, password});
+		});
+
+		document.getElementById('update-user-form').addEventListener('submit', (e) => {
+			e.preventDefault();
+			const data = JSON.parse(document.getElementById('user-update-data').value);
+			handleRequest('/api/users', 'PUT', data);
+		});
+
+		// Handle chirp creation
+		document.getElementById('create-chirp-form').addEventListener('submit', async (e) => {
+			e.preventDefault();
+			const body = document.getElementById('chirp-body').value;
+
+			if (!userAccessToken) {
+				alert('You must log in to create a chirp.');
+				return;
+			}
+
+			try {
+				const response = await fetch('/api/chirps', {
+					method: 'POST',
+					headers: {
+						'Content-Type': 'application/json',
+						'Authorization': `Bearer ${userAccessToken}`,
+					},
+					body: JSON.stringify({body}),
+				});
+				const data = await response.json();
+
+				if (response.ok) {
+					alert(`Chirp created successfully! Chirp ID: ${data.id}`);
+				} else {
+					alert(`Failed to create chirp: ${data.error || 'Unknown error'}`);
+				}
+			} catch (error) {
+				alert(`Error during chirp creation: ${error.message}`);
+			}
+		});
+
+		document.getElementById('get-chirps-form').addEventListener('submit', (e) => {
+			e.preventDefault();
+			handleRequest('/api/chirps', 'GET');
+		});
+
+		document.getElementById('get-chirp-by-id-form').addEventListener('submit', (e) => {
+			e.preventDefault();
+			const chirpID = document.getElementById('chirp-id').value;
+			handleRequest(`/api/chirps/${chirpID}`, 'GET');
+		});
+
+		document.getElementById('delete-chirp-form').addEventListener('submit', (e) => {
+			e.preventDefault();
+			const chirpID = document.getElementById('delete-chirp-id').value;
+			handleRequest(`/api/chirps/${chirpID}`, 'DELETE');
+		});
+
+		document.getElementById('polka-webhooks-form').addEventListener('submit', (e) => {
+			e.preventDefault();
+			const data = JSON.parse(document.getElementById('webhook-data').value);
+			handleRequest('/api/polka/webhooks', 'POST', data);
+		});
+	</script>
 </body>
 
 </html>
