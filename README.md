@@ -1,6 +1,6 @@
 # Chirpy: A Twitter Clone
 
-**Chirpy** is a Twitter-inspired guided project from [boot.dev](https://boot.dev). 
+## How to use
 
 ---
 
@@ -50,3 +50,22 @@
 - `POST /api/login`: Logs in a user and provides access/refresh tokens.
 - `POST /api/refresh`: Refreshes the user's access token using a valid refresh token.
 - `POST /api/revoke`: Revokes a user's refresh token.
+
+## ENV variables 
+Create a .env file in the root of the project 
+The key was randomly generated
+```env
+
+DB_HOST="db"
+DB_USER="brayanmuniz"
+DB_PASSWORD="password"
+DB_NAME="chirpy"
+
+DB_URL="postgres://${DB_USER}:${DB_PASSWORD}@${DB_HOST}:5432/${DB_NAME}?sslmode=disable"
+
+PLATFORM="dev"
+SECRET="OOlxTyhlyLgA9FEp1tadg7p9P8pK9T2D/bcc+IoKbyEUWeCtQwZtfnOn2n33YFSz
+VQv4mvUTQf2wmu+DKDkrSw=="
+POLKA_KEY="f271c81ff7084ee5b99a5091b42d486e"
+```
+

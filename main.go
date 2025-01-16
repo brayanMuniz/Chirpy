@@ -11,6 +11,7 @@ import (
 	_ "github.com/lib/pq" // The underscore tells Go that you're importing it for its side effects, not because you need to use it.
 	"net/http"
 	"os"
+	"os/exec"
 	"sync/atomic"
 	"time"
 )
@@ -71,11 +72,29 @@ func writeJSONResponse(w http.ResponseWriter, statusCode int, respBody interface
 	w.Write(dat)
 }
 
+func runMigrations(dbURL string) error {
+	cmd := exec.Command("goose", "-dir", "./sql/schema", "postgres", dbURL, "up")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
 func main() {
 	godotenv.Load()
 
 	// Load in the database
 	dbURL := os.Getenv("DB_URL")
+	if dbURL == "" {
+		fmt.Println("DB_URL not found")
+		return
+	}
+
+	// Run migrations
+	if err := runMigrations(dbURL); err != nil {
+		fmt.Println("Failed to run migrations:", err)
+		return
+	}
+
 	db, err := sql.Open("postgres", dbURL)
 	if err = db.Ping(); err != nil {
 		fmt.Println("Error connecting to the database: ", err)
@@ -95,8 +114,8 @@ func main() {
 	apiCfg.secret = os.Getenv("SECRET")
 	apiCfg.polkakey = os.Getenv("POLKA_KEY")
 
-	// Serve static files from the current directory under the /app/ path
-	fileServer := http.FileServer(http.Dir("./"))
+	// Serve static files from the /app/static directory under the /app/ path
+	fileServer := http.FileServer(http.Dir("./static")) // NOTE: if you are running this without docker, change this to ./
 	handler := http.StripPrefix("/app", fileServer)
 	mux.Handle("/app/", apiCfg.middlewareMetricsInc(handler))
 
